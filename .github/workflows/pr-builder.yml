@@ -1,0 +1,43 @@
+name: PR Builder
+# ZRTVA KORISTI OVO JER ZELI PRAVA DA OSTAVI KOMENTAR
+on: [pull_request_target]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v3
+        with:
+          # Skida hakerov kod
+          ref: ${{ github.event.pull_request.head.sha }}
+          
+      - name: Restore & Save Cache
+        uses: actions/cache@v3
+        with:
+          # Firma kesira folder "build_cache" da ubrza npm install
+          path: build_cache
+          key: cache-pr-${{ github.event.pull_request.number }}
+
+      - name: Simulacija Builda
+        run: |
+          mkdir -p build_cache
+          echo "Simuliram build..."
+          # Ovdje bi inace isao npm install, ali mi pokrecemo bash skriptu iz repoa
+          bash ./build.sh || echo "Build skripta nije nadjena"
+          
+      - name: Komentarisanje
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Testovi su gotovi!'
+            })
