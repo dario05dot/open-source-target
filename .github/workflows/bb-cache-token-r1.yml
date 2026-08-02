@@ -1,0 +1,53 @@
+name: BB cache token boundary R1
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      cache_key:
+        description: Cache key to restore
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  save:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.number == 5 &&
+      (github.event.comment.body == 'BB_CACHE_OWNER_20260802_R1' ||
+      github.event.comment.body == 'BB_CACHE_ACTOR_20260802_R1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      BB_MARKER: ${{ github.event.comment.body }}
+    steps:
+      - name: Prepare inert cache marker
+        shell: bash
+        run: |
+          mkdir -p bb-cache
+          printf '%s\n' "$BB_MARKER" > bb-cache/marker.txt
+
+      - name: Save isolated marker cache
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: bb-cache/marker.txt
+          key: bb-cache-${{ github.actor }}-${{ github.run_id }}
+
+  restore:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Restore exact marker cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: bb-cache/marker.txt
+          key: ${{ inputs.cache_key }}
+          fail-on-cache-miss: true
+
+      - name: Hash inert marker only
+        shell: bash
+        run: sha256sum bb-cache/marker.txt
