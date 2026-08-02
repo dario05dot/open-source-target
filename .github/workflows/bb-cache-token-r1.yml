@@ -1,53 +1,82 @@
-name: BB cache token boundary R1
+name: BB cache token boundary R2
 
 on:
   issue_comment:
     types: [created]
   workflow_dispatch:
     inputs:
-      cache_key:
-        description: Cache key to restore
+      operation:
+        description: Controlled cache operation
         required: true
+        type: choice
+        options:
+          - save
+          - restore
+      cache_key:
+        description: Exact trusted cache key for restore
+        required: false
         type: string
 
 permissions: {}
 
 jobs:
-  save:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.event.issue.number == 5 &&
-      (github.event.comment.body == 'BB_CACHE_OWNER_20260802_R1' ||
-      github.event.comment.body == 'BB_CACHE_ACTOR_20260802_R1')
+  trusted-save:
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'save'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     env:
-      BB_MARKER: ${{ github.event.comment.body }}
+      BB_MARKER: BB_CACHE_TRUSTED_20260802_R2
     steps:
-      - name: Prepare inert cache marker
+      - name: Prepare trusted inert marker
         shell: bash
         run: |
           mkdir -p bb-cache
           printf '%s\n' "$BB_MARKER" > bb-cache/marker.txt
 
-      - name: Save isolated marker cache
+      - name: Save trusted isolated marker cache
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: bb-cache/marker.txt
-          key: bb-cache-${{ github.actor }}-${{ github.run_id }}
+          key: bb-cache-trusted-${{ github.run_id }}
 
-  restore:
-    if: github.event_name == 'workflow_dispatch'
+  untrusted-save:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.actor == 'saricital' &&
+      github.event.issue.number == 5 &&
+      github.event.comment.body == 'BB_CACHE_ACTOR_20260802_R2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      BB_MARKER: BB_CACHE_UNTRUSTED_20260802_R2
+    steps:
+      - name: Prepare untrusted inert marker
+        shell: bash
+        run: |
+          mkdir -p bb-cache
+          printf '%s\n' "$BB_MARKER" > bb-cache/marker.txt
+
+      - name: Attempt untrusted isolated marker cache save
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: bb-cache/marker.txt
+          key: bb-cache-untrusted-${{ github.run_id }}
+
+  trusted-restore:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'restore' &&
+      startsWith(inputs.cache_key, 'bb-cache-trusted-')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Restore exact marker cache
+      - name: Restore exact trusted marker cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: bb-cache/marker.txt
           key: ${{ inputs.cache_key }}
           fail-on-cache-miss: true
 
-      - name: Hash inert marker only
+      - name: Hash trusted inert marker only
         shell: bash
         run: sha256sum bb-cache/marker.txt
