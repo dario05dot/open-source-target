@@ -1,0 +1,19 @@
+name: bb-hyp060-lock
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  marker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Resolve one official locked dependency
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Emit inert control marker
+        run: printf 'BB_HYP060_VALID_CONTROL\n'
