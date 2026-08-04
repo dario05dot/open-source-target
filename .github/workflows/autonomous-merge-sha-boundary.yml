@@ -1,0 +1,223 @@
+name: Autonomous Merge SHA Boundary
+
+on:
+  workflow_run:
+    workflows:
+      - PR Builder Autonomous
+    types:
+      - completed
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prove-autonomous-path:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request_target'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Record downstream event context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "DOWNSTREAM_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+          echo "DOWNSTREAM_ACTOR=${GITHUB_ACTOR}"
+          echo "DOWNSTREAM_TRIGGERING_ACTOR=${GITHUB_TRIGGERING_ACTOR}"
+
+          jq '{
+            action,
+            workflow_run: {
+              id,
+              run_attempt,
+              event,
+              conclusion,
+              actor: .actor.login,
+              triggering_actor: .triggering_actor.login,
+              head_sha,
+              head_branch,
+              head_repository: .head_repository.full_name,
+              pull_requests
+            }
+          }' "$GITHUB_EVENT_PATH"
+
+      - name: Automatically resolve PR and merge SHA
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          EVENT_HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+        run: |
+          set -euo pipefail
+
+          echo "BASE_REPOSITORY=$BASE_REPOSITORY"
+          echo "EVENT_HEAD_REPOSITORY=$EVENT_HEAD_REPOSITORY"
+          echo "EVENT_HEAD_BRANCH=$EVENT_HEAD_BRANCH"
+          echo "EVENT_HEAD_SHA=$EVENT_HEAD_SHA"
+
+          pull_requests="$(
+            gh api \
+              --method GET \
+              "/repos/${BASE_REPOSITORY}/pulls" \
+              -f state='open' \
+              -f head="${EVENT_HEAD_OWNER}:${EVENT_HEAD_BRANCH}" \
+              -f per_page='100'
+          )"
+
+          matching_pull_requests="$(
+            jq \
+              --arg expected_sha "$EVENT_HEAD_SHA" \
+              --arg expected_repo "$EVENT_HEAD_REPOSITORY" \
+              '[
+                .[]
+                | select(
+                    .state == "open"
+                    and .head.sha == $expected_sha
+                    and .head.repo.full_name == $expected_repo
+                  )
+              ]' <<<"$pull_requests"
+          )"
+
+          match_count="$(jq 'length' <<<"$matching_pull_requests")"
+
+          echo "MATCHING_PR_COUNT=$match_count"
+
+          if [[ "$match_count" -ne 1 ]]; then
+            echo "::error::Expected exactly one matching open PR."
+            jq '.' <<<"$matching_pull_requests"
+            exit 1
+          fi
+
+          pr_number="$(jq -r '.[0].number' <<<"$matching_pull_requests")"
+
+          merge_sha="$(
+            gh api \
+              "/repos/${BASE_REPOSITORY}/git/ref/pull/${pr_number}/merge" \
+              --jq '.object.sha'
+          )"
+
+          if [[ ! "$merge_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Resolved value is not a raw 40-character SHA."
+            exit 1
+          fi
+
+          merge_commit="$(
+            gh api \
+              "/repos/${BASE_REPOSITORY}/git/commits/${merge_sha}"
+          )"
+
+          parent_1="$(jq -r '.parents[0].sha // empty' <<<"$merge_commit")"
+          parent_2="$(jq -r '.parents[1].sha // empty' <<<"$merge_commit")"
+
+          if [[ "$parent_2" != "$EVENT_HEAD_SHA" ]]; then
+            echo "::error::Merge parent 2 is not the fork head SHA."
+            echo "EXPECTED_HEAD_SHA=$EVENT_HEAD_SHA"
+            echo "ACTUAL_PARENT_2=$parent_2"
+            exit 1
+          fi
+
+          echo "AUTO_PR_NUMBER=$pr_number"
+          echo "AUTO_MERGE_SHA=$merge_sha"
+          echo "MERGE_PARENT_1=$parent_1"
+          echo "MERGE_PARENT_2=$parent_2"
+
+          echo "REPOSITORY_VARIABLE_USED=false"
+          echo "MANUAL_SHA_INPUT_USED=false"
+          echo "WORKFLOW_DISPATCH_USED=false"
+          echo "MANUAL_RERUN_USED=false"
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$merge_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Protected fork-head control
+        id: protected-head
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: protected-head
+          persist-credentials: false
+
+      - name: Raw PR merge-SHA boundary test
+        id: candidate-merge
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.resolve.outputs.merge_sha }}
+          path: candidate-merge
+          persist-credentials: false
+
+      - name: Verify inert fork marker without execution
+        id: marker
+        if: steps.candidate-merge.outcome == 'success'
+        shell: bash
+        env:
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          test -f candidate-merge/bb-autonomous-marker.txt
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            "https://raw.githubusercontent.com/${HEAD_REPOSITORY}/${HEAD_SHA}/bb-autonomous-marker.txt" \
+            --output /tmp/fork-marker.txt
+
+          cmp /tmp/fork-marker.txt candidate-merge/bb-autonomous-marker.txt
+
+          fork_hash="$(sha256sum /tmp/fork-marker.txt | awk '{print $1}')"
+          merge_hash="$(sha256sum candidate-merge/bb-autonomous-marker.txt | awk '{print $1}')"
+
+          echo "MARKER_MATCH=true"
+          echo "FORK_MARKER_SHA256=$fork_hash"
+          echo "MERGE_MARKER_SHA256=$merge_hash"
+
+      - name: Print decisive differential
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "HEAD_OUTCOME=${{ steps.protected-head.outcome }}"
+          echo "MERGE_OUTCOME=${{ steps.candidate-merge.outcome }}"
+          echo "MARKER_OUTCOME=${{ steps.marker.outcome }}"
+          echo "RESOLVED_PR=${{ steps.resolve.outputs.pr_number }}"
+          echo "RESOLVED_MERGE_SHA=${{ steps.resolve.outputs.merge_sha }}"
+          echo "CURRENT_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+
+          if [[ "${{ steps.protected-head.outcome }}" != "failure" ]]; then
+            echo "::error::Fork-head control was not refused."
+            exit 1
+          fi
+
+          if [[ "${{ steps.candidate-merge.outcome }}" != "success" ]]; then
+            echo "::error::Raw PR merge SHA was not accepted."
+            exit 1
+          fi
+
+          if [[ "${{ steps.marker.outcome }}" != "success" ]]; then
+            echo "::error::Fork marker identity was not demonstrated."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ]]; then
+            echo "::error::This was not the initial automatic run."
+            exit 1
+          fi
+
+          echo "AUTONOMOUS_ATTACK_PATH_PROVED=true"
+          echo "DECISIVE_DIFFERENTIAL=true"
