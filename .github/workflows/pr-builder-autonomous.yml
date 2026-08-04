@@ -1,0 +1,35 @@
+name: PR Builder Autonomous
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-only:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Record trigger metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "EVENT_NAME=${GITHUB_EVENT_NAME}"
+          echo "ACTOR=${GITHUB_ACTOR}"
+          echo "TRIGGERING_ACTOR=${GITHUB_TRIGGERING_ACTOR}"
+          echo "RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}"
+          echo "HEAD_REPOSITORY=${{ github.event.pull_request.head.repo.full_name }}"
+          echo "HEAD_BRANCH=${{ github.event.pull_request.head.ref }}"
+          echo "HEAD_SHA=${{ github.event.pull_request.head.sha }}"
+          echo "EVENT_MERGE_SHA=${{ github.event.pull_request.merge_commit_sha }}"
+
+          echo "NO_CHECKOUT=true"
+          echo "NO_PR_CODE_EXECUTION=true"
